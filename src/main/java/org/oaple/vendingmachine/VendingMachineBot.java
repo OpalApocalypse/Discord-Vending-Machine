@@ -32,6 +32,7 @@ import org.slf4j.LoggerFactory;
 
 import java.awt.Color;
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
@@ -57,6 +58,10 @@ public final class VendingMachineBot extends ListenerAdapter {
     private static final Pattern SELECTION_PATTERN = Pattern.compile("\\*\\*Selection:\\*\\* `([A-C_][1-3_])`");
     private static final Pattern DROPBOX_LINK_PATTERN = Pattern.compile("\\*\\*Drop-box:\\*\\* \\[([^]]+)]\\(([^)]+)\\)");
     private static final Pattern DROPBOX_TEXT_PATTERN = Pattern.compile("\\*\\*Drop-box:\\*\\* ([^\\n]+)");
+    private static final Pattern IMG_TAG_PATTERN = Pattern.compile("(?i)<img\\b[^>]*\\bsrc\\s*=\\s*['\"]([^'\"]+)['\"][^>]*>");
+    private static final Pattern MARKDOWN_IMAGE_PATTERN = Pattern.compile("!\\[[^]]*]\\(([^)]+)\\)");
+    private static final Pattern MARKDOWN_LINK_PATTERN = Pattern.compile("\\[[^]]+]\\(([^)]+)\\)");
+    private static final Pattern IMGUR_ID_PATTERN = Pattern.compile("^[A-Za-z0-9]+$");
     private static final Color MACHINE_YELLOW = new Color(0xF2B84B);
     private static final Color DROPBOX_GREEN = new Color(0x5BBE7A);
     private static final long DISPENSE_STEP_DELAY_MS = 850;
@@ -208,7 +213,9 @@ public final class VendingMachineBot extends ListenerAdapter {
         String code = Objects.requireNonNull(event.getOption("code")).getAsString();
         String label = Objects.requireNonNull(event.getOption("label")).getAsString();
         String content = Objects.requireNonNull(event.getOption("content")).getAsString();
-        String imageUrl = event.getOption("image-url") == null ? "" : Objects.requireNonNull(event.getOption("image-url")).getAsString();
+        String imageUrl = event.getOption("image-url") == null
+                ? ""
+                : normalizeImageUrl(Objects.requireNonNull(event.getOption("image-url")).getAsString());
         boolean rare = event.getOption("rare") != null && Objects.requireNonNull(event.getOption("rare")).getAsBoolean();
         Slot slot = addStock(code, label, new StockItem(content, imageUrl, rare, 1));
         event.reply("Restocked `" + slot.getCode() + "` with `" + slot.getLabel() + "`.").setEphemeral(true).queue();
@@ -348,7 +355,7 @@ public final class VendingMachineBot extends ListenerAdapter {
                 .queueAfter(deliveryDelay, TimeUnit.MILLISECONDS, delivered -> {
                     replyPrivately(
                             hook,
-                            "`clunk.`\n[Open the " + dispensed.slot().getCode() + " drop-box post](" + delivered.getJumpUrl() + ")"
+                            "`clunk.` Collect your selection here: [post link](" + delivered.getJumpUrl() + ")"
                     );
                     onDelivered.accept(delivered);
                 }, failure -> replyPrivately(hook, "The drop-box jammed while delivering the item. Check the bot logs."));
@@ -418,6 +425,7 @@ public final class VendingMachineBot extends ListenerAdapter {
                 continue;
             }
             slot.setCode(code);
+            slot.getItems().forEach(item -> item.setImageUrl(normalizeImageUrl(item.getImageUrl())));
             normalized.put(code, slot);
         }
         loaded.setSlots(normalized);
@@ -483,8 +491,7 @@ public final class VendingMachineBot extends ListenerAdapter {
                 .setDescription(
                         "**Selection:** `" + displaySelection(view.selection()) + "`\n"
                                 + "**Preview:** " + preview + "\n"
-                                + "**Drop-box:** " + dropBoxLabel(view.latestDropUrl(), view.latestDropLabel()) + "\n"
-                                + "Use the keypad below, then press **Dispense**."
+                                + "**Drop-box:** " + dropBoxLabel(view.latestDropUrl(), view.latestDropLabel())
                 )
                 .setColor(MACHINE_YELLOW)
                 .setFooter(slots.size() + " slots stocked")
@@ -517,6 +524,108 @@ public final class VendingMachineBot extends ListenerAdapter {
             embed.setImage(item.getImageUrl());
         }
         return embed.build();
+    }
+
+    private static String normalizeImageUrl(String raw) {
+        String normalized = raw == null ? "" : raw.trim();
+        if (normalized.isBlank()) {
+            return "";
+        }
+
+        java.util.regex.Matcher imgTagMatcher = IMG_TAG_PATTERN.matcher(normalized);
+        if (imgTagMatcher.find()) {
+            normalized = imgTagMatcher.group(1);
+        }
+
+        java.util.regex.Matcher markdownImageMatcher = MARKDOWN_IMAGE_PATTERN.matcher(normalized);
+        if (markdownImageMatcher.find()) {
+            normalized = markdownImageMatcher.group(1);
+        }
+
+        java.util.regex.Matcher markdownLinkMatcher = MARKDOWN_LINK_PATTERN.matcher(normalized);
+        if (markdownLinkMatcher.find()) {
+            normalized = markdownLinkMatcher.group(1);
+        }
+
+        normalized = normalized.trim()
+                .replace("&amp;", "&");
+
+        if (normalized.startsWith("<") && normalized.endsWith(">") && normalized.length() > 2) {
+            normalized = normalized.substring(1, normalized.length() - 1).trim();
+        }
+
+        if (!isHttpImageCandidate(normalized)) {
+            return "";
+        }
+
+        try {
+            URI uri = URI.create(normalized);
+            String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
+
+            if ((host.equals("imgur.com") || host.equals("www.imgur.com") || host.equals("m.imgur.com"))) {
+                String directImgur = toDirectImgurUrl(uri);
+                if (!directImgur.isBlank()) {
+                    return directImgur;
+                }
+            }
+
+            if (host.equals("github.com") && uri.getPath() != null && uri.getPath().startsWith("/user-attachments/assets/")) {
+                String query = uri.getQuery() == null ? "" : uri.getQuery().toLowerCase(Locale.ROOT);
+                if (query.contains("raw=")) {
+                    return normalized;
+                }
+                String separator = normalized.contains("?") ? "&" : "?";
+                return normalized + separator + "raw=1";
+            }
+        } catch (IllegalArgumentException ignored) {
+            return "";
+        }
+
+        return normalized;
+    }
+
+    private static boolean isHttpImageCandidate(String candidate) {
+        try {
+            URI uri = URI.create(candidate);
+            String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
+            return (scheme.equals("http") || scheme.equals("https")) && uri.getHost() != null && !uri.getHost().isBlank();
+        } catch (IllegalArgumentException ex) {
+            return false;
+        }
+    }
+
+    private static String toDirectImgurUrl(URI uri) {
+        String path = uri.getPath() == null ? "" : uri.getPath().trim();
+        if (path.isBlank() || path.equals("/")) {
+            return "";
+        }
+
+        String[] parts = path.split("/");
+        List<String> cleaned = new ArrayList<>();
+        for (String part : parts) {
+            if (!part.isBlank()) {
+                cleaned.add(part);
+            }
+        }
+        if (cleaned.isEmpty()) {
+            return "";
+        }
+
+        String first = cleaned.getFirst();
+        String imageId = switch (first) {
+            case "a", "gallery", "t" -> cleaned.size() > 1 ? cleaned.get(1) : "";
+            default -> first;
+        };
+
+        int dot = imageId.indexOf('.');
+        if (dot > 0) {
+            imageId = imageId.substring(0, dot);
+        }
+
+        if (!IMGUR_ID_PATTERN.matcher(imageId).matches()) {
+            return "";
+        }
+        return "https://i.imgur.com/" + imageId + ".png";
     }
 
     private static List<ActionRow> keypadButtons(String selection) {

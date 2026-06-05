@@ -90,7 +90,7 @@ The runtime stock file is JSON:
 }
 ```
 
-Set `imageUrl` for image embeds and slot preview thumbnails. Increase `weight` to make an item appear more often. Mark `rare` to give the drop a special color/footer.
+Set `imageUrl` for image embeds and slot preview thumbnails. The bot normalizes common pasted formats (HTML/markdown image links, GitHub user-attachments links, and standard Imgur page links) into direct image URLs where possible. Increase `weight` to make an item appear more often. Mark `rare` to give the drop a special color/footer.
 
 ## Notes
 
