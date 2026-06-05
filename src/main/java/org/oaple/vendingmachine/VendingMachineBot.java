@@ -504,13 +504,13 @@ public final class VendingMachineBot extends ListenerAdapter {
         for (Slot slot : slots.stream().limit(25).toList()) {
             current.add(Button.primary(BUTTON_PREFIX + slot.getCode(), buttonLabel(slot)));
             if (current.size() == 5) {
-                rows.add(ActionRow.of(current.toArray(Button[]::new)));
+                rows.add(ActionRow.of(List.copyOf(current)));
                 current.clear();
             }
         }
 
         if (!current.isEmpty()) {
-            rows.add(ActionRow.of(current.toArray(Button[]::new)));
+            rows.add(ActionRow.of(List.copyOf(current)));
         }
         return rows;
     }
