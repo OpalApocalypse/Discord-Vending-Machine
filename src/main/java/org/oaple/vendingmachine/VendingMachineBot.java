@@ -19,14 +19,13 @@ import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
-import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
+import net.dv8tion.jda.api.interactions.InteractionHook;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.interactions.commands.build.CommandData;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
 import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 import net.dv8tion.jda.api.interactions.commands.build.SubcommandData;
-import net.dv8tion.jda.api.requests.GatewayIntent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,6 +53,7 @@ public final class VendingMachineBot extends ListenerAdapter {
     private static final Pattern SLOT_CODE = Pattern.compile("[A-Z][0-9]{1,2}");
     private static final Color MACHINE_YELLOW = new Color(0xF2B84B);
     private static final Color DROPBOX_GREEN = new Color(0x5BBE7A);
+    private static final long DISPENSE_STEP_DELAY_MS = 850;
 
     private final MachineStore store;
     private final Random random = new SecureRandom();
@@ -70,11 +70,7 @@ public final class VendingMachineBot extends ListenerAdapter {
         BotConfig config = BotConfig.load();
         VendingMachineBot bot = new VendingMachineBot(new MachineStore(config.dataPath()), config.ownerId());
 
-        JDA jda = JDABuilder.createDefault(
-                        config.token(),
-                        GatewayIntent.GUILD_MESSAGES,
-                        GatewayIntent.MESSAGE_CONTENT
-                )
+        JDA jda = JDABuilder.createDefault(config.token())
                 .setStatus(OnlineStatus.ONLINE)
                 .setActivity(Activity.playing("with mystery stock"))
                 .addEventListeners(bot)
@@ -104,50 +100,21 @@ public final class VendingMachineBot extends ListenerAdapter {
         }
 
         String code = id.substring(BUTTON_PREFIX.length());
-        try {
-            DispensedItem dispensed = dispense(code);
-            event.reply("Coin accepted for `" + dispensed.slot().getCode() + "`. Watch the dropbox.")
-                    .setEphemeral(true)
-                    .queue();
-            dispatchDispense(
-                    resolveOutputChannel(event.getGuild(), event.getMessageChannel()),
-                    dispensed,
-                    delivered -> updateMachineDropBox(event.getMessage(), dispensed, delivered)
-            );
-        } catch (IllegalArgumentException ex) {
-            event.reply(ex.getMessage()).setEphemeral(true).queue();
-        } catch (IOException ex) {
-            event.reply("The machine jammed while saving stock data. Check the bot logs.").setEphemeral(true).queue();
-        }
-    }
-
-    @Override
-    public void onMessageReceived(MessageReceivedEvent event) {
-        if (event.getAuthor().isBot() || !event.isFromGuild()) {
-            return;
-        }
-
-        String inputChannelId = machine().getInputChannelId();
-        if (inputChannelId == null || inputChannelId.isBlank() || !event.getChannel().getId().equals(inputChannelId)) {
-            return;
-        }
-
-        String code = readCode(event.getMessage().getContentRaw());
-        if (!looksLikeCode(code)) {
-            return;
-        }
-
-        try {
-            event.getMessage().delete().queue(null, ignored -> {
-            });
-            DispensedItem dispensed = dispense(code);
-            dispatchDispense(resolveOutputChannel(event.getGuild(), event.getChannel()), dispensed, ignored -> {
-            });
-        } catch (IllegalArgumentException ex) {
-            event.getChannel().sendMessage(ex.getMessage()).queue();
-        } catch (IOException ex) {
-            event.getChannel().sendMessage("The machine jammed while saving stock data. Check the bot logs.").queue();
-        }
+        event.deferReply(true).queue(hook -> {
+            try {
+                DispensedItem dispensed = dispense(code);
+                dispatchDispense(
+                        resolveOutputChannel(event.getGuild(), event.getMessageChannel()),
+                        dispensed,
+                        hook,
+                        delivered -> updateMachineDropBox(event.getMessage(), dispensed, delivered)
+                );
+            } catch (IllegalArgumentException ex) {
+                replyPrivately(hook, ex.getMessage());
+            } catch (IOException ex) {
+                replyPrivately(hook, "The machine jammed while saving stock data. Check the bot logs.");
+            }
+        });
     }
 
     private void handleMachine(SlashCommandInteractionEvent event) {
@@ -158,18 +125,17 @@ public final class VendingMachineBot extends ListenerAdapter {
 
     private void handleVend(SlashCommandInteractionEvent event) {
         String code = Objects.requireNonNull(event.getOption("code")).getAsString();
-        try {
-            DispensedItem dispensed = dispense(code);
-            event.reply("Coin accepted for `" + dispensed.slot().getCode() + "`. Watch the dropbox.")
-                    .setEphemeral(true)
-                    .queue();
-            dispatchDispense(resolveOutputChannel(event.getGuild(), event.getMessageChannel()), dispensed, ignored -> {
-            });
-        } catch (IllegalArgumentException ex) {
-            event.reply(ex.getMessage()).setEphemeral(true).queue();
-        } catch (IOException ex) {
-            event.reply("The machine jammed while saving stock data. Check the bot logs.").setEphemeral(true).queue();
-        }
+        event.deferReply(true).queue(hook -> {
+            try {
+                DispensedItem dispensed = dispense(code);
+                dispatchDispense(resolveOutputChannel(event.getGuild(), event.getMessageChannel()), dispensed, hook, ignored -> {
+                });
+            } catch (IllegalArgumentException ex) {
+                replyPrivately(hook, ex.getMessage());
+            } catch (IOException ex) {
+                replyPrivately(hook, "The machine jammed while saving stock data. Check the bot logs.");
+            }
+        });
     }
 
     private void handleStock(SlashCommandInteractionEvent event) {
@@ -189,7 +155,6 @@ public final class VendingMachineBot extends ListenerAdapter {
                 case "clear" -> handleStockClear(event);
                 case "enable" -> handleStockEnabled(event, true);
                 case "disable" -> handleStockEnabled(event, false);
-                case "set-input" -> handleSetInput(event);
                 case "set-output" -> handleSetOutput(event);
                 default -> event.reply("Unknown stock command.").setEphemeral(true).queue();
             }
@@ -220,12 +185,6 @@ public final class VendingMachineBot extends ListenerAdapter {
         String code = Objects.requireNonNull(event.getOption("code")).getAsString();
         setEnabled(code, enabled);
         event.reply((enabled ? "Enabled " : "Disabled ") + "`" + normalizeCode(code) + "`.").setEphemeral(true).queue();
-    }
-
-    private void handleSetInput(SlashCommandInteractionEvent event) throws IOException {
-        String channelId = Objects.requireNonNull(event.getOption("channel-id")).getAsString();
-        setInputChannelId(channelId);
-        event.reply("Legacy input channel set to `<#" + cleanSnowflake(channelId) + ">`.").setEphemeral(true).queue();
     }
 
     private void handleSetOutput(SlashCommandInteractionEvent event) throws IOException {
@@ -295,11 +254,6 @@ public final class VendingMachineBot extends ListenerAdapter {
         store.save(machine);
     }
 
-    private synchronized void setInputChannelId(String channelId) throws IOException {
-        machine.setInputChannelId(cleanSnowflake(channelId));
-        store.save(machine);
-    }
-
     private synchronized void setOutputChannelId(String channelId) throws IOException {
         machine.setOutputChannelId(cleanSnowflake(channelId));
         store.save(machine);
@@ -341,15 +295,24 @@ public final class VendingMachineBot extends ListenerAdapter {
         return fallback;
     }
 
-    private void dispatchDispense(MessageChannel channel, DispensedItem dispensed, Consumer<Message> onDelivered) {
-        long delay = 0;
-        for (String step : machine().getDispenseSequence()) {
-            channel.sendMessage(step.replace("{code}", dispensed.slot().getCode()))
-                    .queueAfter(delay, TimeUnit.MILLISECONDS);
-            delay += 700;
+    private void dispatchDispense(MessageChannel outputChannel, DispensedItem dispensed, InteractionHook hook, Consumer<Message> onDelivered) {
+        List<String> steps = machine().getDispenseSequence();
+        for (int i = 0; i < steps.size(); i++) {
+            String step = steps.get(i).replace("{code}", dispensed.slot().getCode());
+            hook.editOriginal(step)
+                    .queueAfter(i * DISPENSE_STEP_DELAY_MS, TimeUnit.MILLISECONDS, ignored -> {
+                    }, failure -> LOGGER.warn("Could not update private vending machine status.", failure));
         }
-        channel.sendMessageEmbeds(dispenseEmbed(dispensed))
-                .queueAfter(delay, TimeUnit.MILLISECONDS, onDelivered);
+
+        long deliveryDelay = Math.max(DISPENSE_STEP_DELAY_MS, steps.size() * DISPENSE_STEP_DELAY_MS);
+        outputChannel.sendMessageEmbeds(dispenseEmbed(dispensed))
+                .queueAfter(deliveryDelay, TimeUnit.MILLISECONDS, delivered -> {
+                    replyPrivately(
+                            hook,
+                            "`clunk.`\n[Open the " + dispensed.slot().getCode() + " drop-box post](" + delivered.getJumpUrl() + ")"
+                    );
+                    onDelivered.accept(delivered);
+                }, failure -> replyPrivately(hook, "The drop-box jammed while delivering the item. Check the bot logs."));
     }
 
     private void updateMachineDropBox(Message machineMessage, DispensedItem dispensed, Message delivered) {
@@ -358,16 +321,9 @@ public final class VendingMachineBot extends ListenerAdapter {
                 .queue(null, failure -> LOGGER.warn("Could not update vending machine drop-box link.", failure));
     }
 
-    private boolean looksLikeCode(String raw) {
-        return SLOT_CODE.matcher(normalizeCode(raw)).matches();
-    }
-
-    private String readCode(String raw) {
-        String trimmed = raw == null ? "" : raw.trim();
-        if (trimmed.startsWith("!")) {
-            trimmed = trimmed.substring(1).trim();
-        }
-        return normalizeCode(trimmed);
+    private void replyPrivately(InteractionHook hook, String message) {
+        hook.editOriginal(message)
+                .queue(null, failure -> LOGGER.warn("Could not update private vending machine reply.", failure));
     }
 
     private String normalizeCode(String raw) {
@@ -467,8 +423,6 @@ public final class VendingMachineBot extends ListenerAdapter {
                                         .addOptions(new OptionData(OptionType.STRING, "code", "Slot code, like A1.", true)),
                                 new SubcommandData("disable", "Disable a slot.")
                                         .addOptions(new OptionData(OptionType.STRING, "code", "Slot code, like A1.", true)),
-                                new SubcommandData("set-input", "Set the legacy text input channel by ID.")
-                                        .addOptions(new OptionData(OptionType.STRING, "channel-id", "Discord text channel ID.", true)),
                                 new SubcommandData("set-output", "Set the dispense output channel by ID.")
                                         .addOptions(new OptionData(OptionType.STRING, "channel-id", "Discord text channel ID.", true))
                         )
@@ -500,22 +454,18 @@ public final class VendingMachineBot extends ListenerAdapter {
         }
 
         display.append("|          DROP-BOX             |\n");
-        display.append("|       latest drop below       |\n");
+        display.append("| ").append(pad(dropBoxLabel(latestDrop), 29)).append(" |\n");
         display.append("+-------------------------------+\n");
 
         EmbedBuilder embed = new EmbedBuilder()
                 .setTitle(machine.getTitle())
-                .setDescription("```text\n" + display + "```\nPress a slot button or type `!A1` in the configured input channel.")
+                .setDescription("```text\n" + display + "```\nUse `/vend code` or press a slot button.")
                 .setColor(MACHINE_YELLOW)
                 .setFooter(slots.size() + " slots stocked")
                 .setTimestamp(Instant.now());
 
         if (latestDropUrl != null && !latestDropUrl.isBlank() && latestDrop != null) {
-            embed.addField(
-                    "Drop-box",
-                    "[" + latestDrop.slot().getCode() + " clunked over here](" + latestDropUrl + ")",
-                    false
-            );
+            embed.setUrl(latestDropUrl);
         }
         return embed.build();
     }
@@ -539,18 +489,14 @@ public final class VendingMachineBot extends ListenerAdapter {
     private static List<ActionRow> slotButtons(Machine machine) {
         List<Slot> slots = enabledSlots(machine);
         List<ActionRow> rows = new ArrayList<>();
-        List<Button> current = new ArrayList<>();
+        int visibleSlots = Math.min(slots.size(), 25);
 
-        for (Slot slot : slots.stream().limit(25).toList()) {
-            current.add(Button.primary(BUTTON_PREFIX + slot.getCode(), buttonLabel(slot)));
-            if (current.size() == 5) {
-                rows.add(ActionRow.of(List.copyOf(current)));
-                current.clear();
+        for (int i = 0; i < visibleSlots; i += 3) {
+            List<Button> row = new ArrayList<>();
+            for (Slot slot : slots.subList(i, Math.min(i + 3, visibleSlots))) {
+                row.add(Button.primary(BUTTON_PREFIX + slot.getCode(), buttonLabel(slot)));
             }
-        }
-
-        if (!current.isEmpty()) {
-            rows.add(ActionRow.of(List.copyOf(current)));
+            rows.add(ActionRow.of(row));
         }
         return rows;
     }
@@ -563,8 +509,15 @@ public final class VendingMachineBot extends ListenerAdapter {
     }
 
     private static String buttonLabel(Slot slot) {
-        String label = slot.getCode() + " " + slot.getLabel();
+        String label = slot.getCode() + " - " + slot.getLabel();
         return label.length() <= 80 ? label : label.substring(0, 77) + "...";
+    }
+
+    private static String dropBoxLabel(DispensedItem latestDrop) {
+        if (latestDrop == null) {
+            return "latest drop below";
+        }
+        return latestDrop.slot().getCode() + " clunked over here";
     }
 
     private static void appendCell(StringBuilder display, String value) {
