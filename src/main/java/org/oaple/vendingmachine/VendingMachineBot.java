@@ -13,6 +13,7 @@ import net.dv8tion.jda.api.components.buttons.Button;
 import net.dv8tion.jda.api.entities.Activity;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
+import net.dv8tion.jda.api.entities.Message;
 import net.dv8tion.jda.api.entities.MessageEmbed;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
@@ -44,6 +45,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 public final class VendingMachineBot extends ListenerAdapter {
@@ -107,7 +109,11 @@ public final class VendingMachineBot extends ListenerAdapter {
             event.reply("Coin accepted for `" + dispensed.slot().getCode() + "`. Watch the dropbox.")
                     .setEphemeral(true)
                     .queue();
-            dispatchDispense(resolveOutputChannel(event.getGuild(), event.getMessageChannel()), dispensed);
+            dispatchDispense(
+                    resolveOutputChannel(event.getGuild(), event.getMessageChannel()),
+                    dispensed,
+                    delivered -> updateMachineDropBox(event.getMessage(), dispensed, delivered)
+            );
         } catch (IllegalArgumentException ex) {
             event.reply(ex.getMessage()).setEphemeral(true).queue();
         } catch (IOException ex) {
@@ -126,14 +132,17 @@ public final class VendingMachineBot extends ListenerAdapter {
             return;
         }
 
-        String raw = event.getMessage().getContentRaw().trim();
-        if (!looksLikeCode(raw)) {
+        String code = readCode(event.getMessage().getContentRaw());
+        if (!looksLikeCode(code)) {
             return;
         }
 
         try {
-            DispensedItem dispensed = dispense(raw);
-            dispatchDispense(resolveOutputChannel(event.getGuild(), event.getChannel()), dispensed);
+            event.getMessage().delete().queue(null, ignored -> {
+            });
+            DispensedItem dispensed = dispense(code);
+            dispatchDispense(resolveOutputChannel(event.getGuild(), event.getChannel()), dispensed, ignored -> {
+            });
         } catch (IllegalArgumentException ex) {
             event.getChannel().sendMessage(ex.getMessage()).queue();
         } catch (IOException ex) {
@@ -154,7 +163,8 @@ public final class VendingMachineBot extends ListenerAdapter {
             event.reply("Coin accepted for `" + dispensed.slot().getCode() + "`. Watch the dropbox.")
                     .setEphemeral(true)
                     .queue();
-            dispatchDispense(resolveOutputChannel(event.getGuild(), event.getMessageChannel()), dispensed);
+            dispatchDispense(resolveOutputChannel(event.getGuild(), event.getMessageChannel()), dispensed, ignored -> {
+            });
         } catch (IllegalArgumentException ex) {
             event.reply(ex.getMessage()).setEphemeral(true).queue();
         } catch (IOException ex) {
@@ -331,7 +341,7 @@ public final class VendingMachineBot extends ListenerAdapter {
         return fallback;
     }
 
-    private void dispatchDispense(MessageChannel channel, DispensedItem dispensed) {
+    private void dispatchDispense(MessageChannel channel, DispensedItem dispensed, Consumer<Message> onDelivered) {
         long delay = 0;
         for (String step : machine().getDispenseSequence()) {
             channel.sendMessage(step.replace("{code}", dispensed.slot().getCode()))
@@ -339,11 +349,25 @@ public final class VendingMachineBot extends ListenerAdapter {
             delay += 700;
         }
         channel.sendMessageEmbeds(dispenseEmbed(dispensed))
-                .queueAfter(delay, TimeUnit.MILLISECONDS);
+                .queueAfter(delay, TimeUnit.MILLISECONDS, onDelivered);
+    }
+
+    private void updateMachineDropBox(Message machineMessage, DispensedItem dispensed, Message delivered) {
+        machineMessage.editMessageEmbeds(machineEmbed(machine(), delivered.getJumpUrl(), dispensed))
+                .setComponents(slotButtons(machine()))
+                .queue(null, failure -> LOGGER.warn("Could not update vending machine drop-box link.", failure));
     }
 
     private boolean looksLikeCode(String raw) {
         return SLOT_CODE.matcher(normalizeCode(raw)).matches();
+    }
+
+    private String readCode(String raw) {
+        String trimmed = raw == null ? "" : raw.trim();
+        if (trimmed.startsWith("!")) {
+            trimmed = trimmed.substring(1).trim();
+        }
+        return normalizeCode(trimmed);
     }
 
     private String normalizeCode(String raw) {
@@ -452,6 +476,10 @@ public final class VendingMachineBot extends ListenerAdapter {
     }
 
     private static MessageEmbed machineEmbed(Machine machine) {
+        return machineEmbed(machine, "", null);
+    }
+
+    private static MessageEmbed machineEmbed(Machine machine, String latestDropUrl, DispensedItem latestDrop) {
         StringBuilder display = new StringBuilder();
         display.append("+-------------------------------+\n");
         display.append("|       DISCORD VENDING         |\n");
@@ -471,13 +499,25 @@ public final class VendingMachineBot extends ListenerAdapter {
             display.append("\n+---------+---------+---------+\n");
         }
 
-        return new EmbedBuilder()
+        display.append("|          DROP-BOX             |\n");
+        display.append("|       latest drop below       |\n");
+        display.append("+-------------------------------+\n");
+
+        EmbedBuilder embed = new EmbedBuilder()
                 .setTitle(machine.getTitle())
-                .setDescription("```text\n" + display + "```\nUse `/vend code`, press a slot button, or type the code in the configured input channel.")
+                .setDescription("```text\n" + display + "```\nPress a slot button or type `!A1` in the configured input channel.")
                 .setColor(MACHINE_YELLOW)
                 .setFooter(slots.size() + " slots stocked")
-                .setTimestamp(Instant.now())
-                .build();
+                .setTimestamp(Instant.now());
+
+        if (latestDropUrl != null && !latestDropUrl.isBlank() && latestDrop != null) {
+            embed.addField(
+                    "Drop-box",
+                    "[" + latestDrop.slot().getCode() + " clunked over here](" + latestDropUrl + ")",
+                    false
+            );
+        }
+        return embed.build();
     }
 
     private static MessageEmbed dispenseEmbed(DispensedItem dispensed) {
