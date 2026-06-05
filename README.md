@@ -7,24 +7,26 @@ Post the machine, pick a slot like `A1`, and the bot makes a small show of dispe
 ```text
 +-------------------------------+
 |       DISCORD VENDING         |
-+---------+---------+---------+
-| A1      | A2      | A3      |
-| Cats    | Dogs    | Otters  |
-+---------+---------+---------+
-| B1      | B2      | B3      |
-| Memes   | Wholeso | Cringe  |
-+---------+---------+---------+
-| C1      | C2      | C3      |
-| Quotes  | Waifu   | Frank   |
-+---------+---------+---------+
++---------+---------+-----------+
+| A1      | A2      | A3        |
+| Cats    | Dogs    | Otters    |
++---------+---------+-----------+
+| B1      | B2      | B3        |
+| Memes   | Wholeso | Cringe    |
++---------+---------+-----------+
+| C1      | C2      | C3        |
+| Quotes  | Waifu   | Frank     |
++---------+---------+-----------+
 ```
 
 ## What it does
 
 - Posts an embedded vending machine display with clickable slot buttons.
 - Supports `/vend code` for modern Discord slash-command use.
-- Supports the original concept: typing `A1` in a configured input channel.
+- Supports the original concept: typing `A1` or `!A1` in a configured input channel.
 - Dispenses into a configured output channel with a tiny anticipation sequence.
+- Updates the clicked vending machine message with a latest drop-box link after the drop lands.
+- Tries to delete typed input commands so the input channel can feel like a keypad.
 - Stores editable stock/settings in `data/machine.json`.
 - Includes admin stock commands for adding, clearing, enabling, disabling, and reloading slots.
 
@@ -63,6 +65,13 @@ On first launch, the bot creates `data/machine.json` with sample stock.
 - `/stock reload` reloads `data/machine.json` after manual edits.
 
 Stock commands require Manage Server, Administrator, or `OWNER_ID` in `.env`.
+
+For the most vending-machine-like flow, create two channels:
+
+- an input/keypad channel where people type `!A1`, or where you pin/post `/machine`
+- a drop-box channel configured with `/stock set-output`, where the actual result appears after a short delay
+
+If someone presses a button on the machine message, the result still lands in the drop-box channel. The machine message then edits itself with a link to that drop so people can choose when to peek.
 
 ## Stock format
 
