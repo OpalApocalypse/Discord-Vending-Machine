@@ -4,12 +4,12 @@ A Discord bot that turns server memes, quotes, links, images, and inside jokes i
 
 Post the machine, pick a slot like `A1`, and the bot makes a small show of dispensing the result into a configured dropbox channel.
 
-The machine post is a standalone bot message with visual slot preview cards. Slot cards show the code, label, and the first stocked `imageUrl` as a small thumbnail when one is available.
+The machine post is a standalone bot message with a simple selection display and keypad. Users press A/B/C and 1/2/3, see the selected slot preview, then press Dispense.
 
 ## What it does
 
 - Posts a standalone bot-authored vending machine message, so `/machine` does not appear as the public machine post.
-- Shows visual slot preview cards with optional thumbnails from stock item image URLs.
+- Shows a selection display with optional thumbnail preview from the selected slot's first stocked image URL.
 - Supports `/vend code` for modern Discord slash-command use.
 - Shows the coin/gears/clunk sequence as one private interaction message that edits itself.
 - Dispenses the final item into a configured output channel.
@@ -53,10 +53,10 @@ Stock commands require Manage Server, Administrator, or `OWNER_ID` in `.env`.
 
 For the most vending-machine-like flow, create two channels:
 
-- a vending-machine channel where you post `/machine` and users press slot buttons
+- a vending-machine channel where you post `/machine` and users use the keypad buttons
 - a drop-box channel configured with `/stock set-output`, where the actual result appears after a short delay
 
-The coin/gears/clunk sequence is shown privately to the user who pressed the button or ran `/vend`. The final reveal still lands in the drop-box channel. The machine message then edits its drop-box display to show the latest delivered slot.
+The public machine shows the current keypad selection and preview. The coin/gears/clunk sequence is shown privately to the user who pressed Dispense or ran `/vend`. The final reveal still lands in the drop-box channel. The machine message then clears the selection and edits its drop-box display to show the latest delivered slot.
 
 ## Stock format
 
