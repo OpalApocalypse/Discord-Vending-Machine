@@ -10,6 +10,7 @@ import net.dv8tion.jda.api.OnlineStatus;
 import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.components.actionrow.ActionRow;
 import net.dv8tion.jda.api.components.buttons.Button;
+import net.dv8tion.jda.api.components.buttons.ButtonStyle;
 import net.dv8tion.jda.api.entities.Activity;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
@@ -49,8 +50,13 @@ import java.util.regex.Pattern;
 
 public final class VendingMachineBot extends ListenerAdapter {
     private static final Logger LOGGER = LoggerFactory.getLogger(VendingMachineBot.class);
-    private static final String BUTTON_PREFIX = "vend:";
+    private static final String KEY_PREFIX = "vend:key:";
+    private static final String DISPENSE_ID = "vend:dispense";
+    private static final String CLEAR_ID = "vend:clear";
     private static final Pattern SLOT_CODE = Pattern.compile("[A-Z][0-9]{1,2}");
+    private static final Pattern SELECTION_PATTERN = Pattern.compile("\\*\\*Selection:\\*\\* `([A-C_][1-3_])`");
+    private static final Pattern DROPBOX_LINK_PATTERN = Pattern.compile("\\*\\*Drop-box:\\*\\* \\[([^]]+)]\\(([^)]+)\\)");
+    private static final Pattern DROPBOX_TEXT_PATTERN = Pattern.compile("\\*\\*Drop-box:\\*\\* ([^\\n]+)");
     private static final Color MACHINE_YELLOW = new Color(0xF2B84B);
     private static final Color DROPBOX_GREEN = new Color(0x5BBE7A);
     private static final long DISPENSE_STEP_DELAY_MS = 850;
@@ -95,11 +101,25 @@ public final class VendingMachineBot extends ListenerAdapter {
     @Override
     public void onButtonInteraction(ButtonInteractionEvent event) {
         String id = event.getComponentId();
-        if (!id.startsWith(BUTTON_PREFIX)) {
+        if (id.startsWith(KEY_PREFIX)) {
+            handleKeypad(event, id.substring(KEY_PREFIX.length()));
+            return;
+        }
+        if (id.equals(CLEAR_ID)) {
+            handleClearSelection(event);
+            return;
+        }
+        if (!id.equals(DISPENSE_ID)) {
             return;
         }
 
-        String code = id.substring(BUTTON_PREFIX.length());
+        MachineView view = machineView(event.getMessage());
+        String code = view.selection();
+        if (!completeSelection(code)) {
+            event.reply("Pick a row and a number first.").setEphemeral(true).queue();
+            return;
+        }
+
         event.deferReply(true).queue(hook -> {
             try {
                 DispensedItem dispensed = dispense(code);
@@ -119,8 +139,8 @@ public final class VendingMachineBot extends ListenerAdapter {
 
     private void handleMachine(SlashCommandInteractionEvent event) {
         event.deferReply(true).queue(hook -> event.getMessageChannel()
-                .sendMessageEmbeds(machineEmbeds(machine()))
-                .setComponents(slotButtons(machine()))
+                .sendMessageEmbeds(machineEmbed(machine(), MachineView.empty()))
+                .setComponents(keypadButtons("__"))
                 .queue(
                         sent -> replyPrivately(hook, "Machine posted."),
                         failure -> replyPrivately(hook, "Could not post the machine. Check the bot logs.")
@@ -140,6 +160,21 @@ public final class VendingMachineBot extends ListenerAdapter {
                 replyPrivately(hook, "The machine jammed while saving stock data. Check the bot logs.");
             }
         });
+    }
+
+    private void handleKeypad(ButtonInteractionEvent event, String key) {
+        MachineView view = machineView(event.getMessage());
+        String selection = applyKey(view.selection(), key);
+        event.editMessageEmbeds(machineEmbed(machine(), view.withSelection(selection)))
+                .setComponents(keypadButtons(selection))
+                .queue();
+    }
+
+    private void handleClearSelection(ButtonInteractionEvent event) {
+        MachineView view = machineView(event.getMessage()).withSelection("__");
+        event.editMessageEmbeds(machineEmbed(machine(), view))
+                .setComponents(keypadButtons(view.selection()))
+                .queue();
     }
 
     private void handleStock(SlashCommandInteractionEvent event) {
@@ -320,8 +355,11 @@ public final class VendingMachineBot extends ListenerAdapter {
     }
 
     private void updateMachineDropBox(Message machineMessage, DispensedItem dispensed, Message delivered) {
-        machineMessage.editMessageEmbeds(machineEmbeds(machine(), delivered.getJumpUrl(), dispensed))
-                .setComponents(slotButtons(machine()))
+        MachineView view = machineView(machineMessage)
+                .withSelection("__")
+                .withLatestDrop(delivered.getJumpUrl(), dispensed.slot().getCode() + " clunked over here");
+        machineMessage.editMessageEmbeds(machineEmbed(machine(), view))
+                .setComponents(keypadButtons(view.selection()))
                 .queue(null, failure -> LOGGER.warn("Could not update vending machine drop-box link.", failure));
     }
 
@@ -433,40 +471,36 @@ public final class VendingMachineBot extends ListenerAdapter {
         );
     }
 
-    private static List<MessageEmbed> machineEmbeds(Machine machine) {
-        return machineEmbeds(machine, "", null);
-    }
-
-    private static List<MessageEmbed> machineEmbeds(Machine machine, String latestDropUrl, DispensedItem latestDrop) {
+    private static MessageEmbed machineEmbed(Machine machine, MachineView view) {
         List<Slot> slots = enabledSlots(machine);
-        List<MessageEmbed> embeds = new ArrayList<>();
+        Slot selectedSlot = selectedSlot(machine, view.selection());
+        String preview = selectedSlot == null
+                ? "Choose a row and number."
+                : selectedSlot.getCode() + " - " + selectedSlot.getLabel();
 
-        EmbedBuilder header = new EmbedBuilder()
+        EmbedBuilder embed = new EmbedBuilder()
                 .setTitle(machine.getTitle())
-                .setDescription("**Drop-box:** " + dropBoxLabel(latestDropUrl, latestDrop) + "\nPick a preview below, then press the matching slot button.")
+                .setDescription(
+                        "**Selection:** `" + displaySelection(view.selection()) + "`\n"
+                                + "**Preview:** " + preview + "\n"
+                                + "**Drop-box:** " + dropBoxLabel(view.latestDropUrl(), view.latestDropLabel()) + "\n"
+                                + "Use the keypad below, then press **Dispense**."
+                )
                 .setColor(MACHINE_YELLOW)
                 .setFooter(slots.size() + " slots stocked")
                 .setTimestamp(Instant.now());
 
-        if (latestDropUrl != null && !latestDropUrl.isBlank() && latestDrop != null) {
-            header.setUrl(latestDropUrl);
+        if (view.latestDropUrl() != null && !view.latestDropUrl().isBlank()) {
+            embed.setUrl(view.latestDropUrl());
         }
-        embeds.add(header.build());
 
-        for (Slot slot : slots.stream().limit(9).toList()) {
-            EmbedBuilder preview = new EmbedBuilder()
-                    .setTitle(slot.getCode())
-                    .setDescription("**" + slot.getLabel() + "**")
-                    .setColor(MACHINE_YELLOW);
-
-            String previewImageUrl = previewImageUrl(slot);
+        if (selectedSlot != null) {
+            String previewImageUrl = previewImageUrl(selectedSlot);
             if (!previewImageUrl.isBlank()) {
-                preview.setThumbnail(previewImageUrl);
+                embed.setThumbnail(previewImageUrl);
             }
-
-            embeds.add(preview.build());
         }
-        return embeds;
+        return embed.build();
     }
 
     private static MessageEmbed dispenseEmbed(DispensedItem dispensed) {
@@ -485,19 +519,24 @@ public final class VendingMachineBot extends ListenerAdapter {
         return embed.build();
     }
 
-    private static List<ActionRow> slotButtons(Machine machine) {
-        List<Slot> slots = enabledSlots(machine);
-        List<ActionRow> rows = new ArrayList<>();
-        int visibleSlots = Math.min(slots.size(), 25);
-
-        for (int i = 0; i < visibleSlots; i += 3) {
-            List<Button> row = new ArrayList<>();
-            for (Slot slot : slots.subList(i, Math.min(i + 3, visibleSlots))) {
-                row.add(Button.primary(BUTTON_PREFIX + slot.getCode(), buttonLabel(slot)));
-            }
-            rows.add(ActionRow.of(row));
-        }
-        return rows;
+    private static List<ActionRow> keypadButtons(String selection) {
+        boolean ready = completeSelection(selection);
+        return List.of(
+                ActionRow.of(
+                        rowButton("A", selection),
+                        rowButton("B", selection),
+                        rowButton("C", selection)
+                ),
+                ActionRow.of(
+                        columnButton("1", selection),
+                        columnButton("2", selection),
+                        columnButton("3", selection)
+                ),
+                ActionRow.of(
+                        Button.success(DISPENSE_ID, "Dispense").withDisabled(!ready),
+                        Button.secondary(CLEAR_ID, "Clear").withDisabled(selection == null || selection.equals("__"))
+                )
+        );
     }
 
     private static List<Slot> enabledSlots(Machine machine) {
@@ -507,16 +546,20 @@ public final class VendingMachineBot extends ListenerAdapter {
                 .toList();
     }
 
-    private static String buttonLabel(Slot slot) {
-        String label = slot.getCode() + " - " + slot.getLabel();
-        return label.length() <= 80 ? label : label.substring(0, 77) + "...";
+    private static Button rowButton(String row, String selection) {
+        boolean selected = normalizeSelection(selection).charAt(0) == row.charAt(0);
+        Button button = Button.primary(KEY_PREFIX + row, row);
+        return selected ? button.withStyle(ButtonStyle.SUCCESS) : button;
     }
 
-    private static String dropBoxLabel(String latestDropUrl, DispensedItem latestDrop) {
-        if (latestDrop == null) {
-            return "latest drop below";
-        }
-        String label = latestDrop.slot().getCode() + " clunked over here";
+    private static Button columnButton(String column, String selection) {
+        boolean selected = normalizeSelection(selection).charAt(1) == column.charAt(0);
+        Button button = Button.primary(KEY_PREFIX + column, column);
+        return selected ? button.withStyle(ButtonStyle.SUCCESS) : button;
+    }
+
+    private static String dropBoxLabel(String latestDropUrl, String latestDropLabel) {
+        String label = latestDropLabel == null || latestDropLabel.isBlank() ? "latest drop below" : latestDropLabel;
         if (latestDropUrl == null || latestDropUrl.isBlank()) {
             return label;
         }
@@ -529,6 +572,89 @@ public final class VendingMachineBot extends ListenerAdapter {
                 .filter(url -> url != null && !url.isBlank())
                 .findFirst()
                 .orElse("");
+    }
+
+    private static MachineView machineView(Message message) {
+        if (message.getEmbeds().isEmpty()) {
+            return MachineView.empty();
+        }
+
+        MessageEmbed embed = message.getEmbeds().getFirst();
+        String description = embed.getDescription();
+        if (description == null || description.isBlank()) {
+            return MachineView.empty();
+        }
+
+        String selection = "__";
+        java.util.regex.Matcher selectionMatcher = SELECTION_PATTERN.matcher(description);
+        if (selectionMatcher.find()) {
+            selection = normalizeSelection(selectionMatcher.group(1));
+        }
+
+        String latestDropUrl = "";
+        String latestDropLabel = "latest drop below";
+        java.util.regex.Matcher dropLinkMatcher = DROPBOX_LINK_PATTERN.matcher(description);
+        if (dropLinkMatcher.find()) {
+            latestDropLabel = dropLinkMatcher.group(1);
+            latestDropUrl = dropLinkMatcher.group(2);
+        } else {
+            java.util.regex.Matcher dropTextMatcher = DROPBOX_TEXT_PATTERN.matcher(description);
+            if (dropTextMatcher.find()) {
+                latestDropLabel = dropTextMatcher.group(1).trim();
+            }
+        }
+
+        return new MachineView(selection, latestDropUrl, latestDropLabel);
+    }
+
+    private static String applyKey(String selection, String key) {
+        String normalized = normalizeSelection(selection);
+        char row = normalized.charAt(0);
+        char column = normalized.charAt(1);
+        String upperKey = key == null ? "" : key.toUpperCase(Locale.ROOT);
+
+        if (upperKey.matches("[A-C]")) {
+            row = upperKey.charAt(0);
+        } else if (upperKey.matches("[1-3]")) {
+            column = upperKey.charAt(0);
+        }
+        return "" + row + column;
+    }
+
+    private static String normalizeSelection(String selection) {
+        String safe = selection == null ? "__" : selection.toUpperCase(Locale.ROOT);
+        char row = safe.length() > 0 && safe.charAt(0) >= 'A' && safe.charAt(0) <= 'C' ? safe.charAt(0) : '_';
+        char column = safe.length() > 1 && safe.charAt(1) >= '1' && safe.charAt(1) <= '3' ? safe.charAt(1) : '_';
+        return "" + row + column;
+    }
+
+    private static boolean completeSelection(String selection) {
+        return normalizeSelection(selection).matches("[A-C][1-3]");
+    }
+
+    private static String displaySelection(String selection) {
+        return normalizeSelection(selection).replace('_', '-');
+    }
+
+    private static Slot selectedSlot(Machine machine, String selection) {
+        if (!completeSelection(selection)) {
+            return null;
+        }
+        return machine.getSlots().get(normalizeSelection(selection));
+    }
+
+    private record MachineView(String selection, String latestDropUrl, String latestDropLabel) {
+        static MachineView empty() {
+            return new MachineView("__", "", "latest drop below");
+        }
+
+        MachineView withSelection(String selection) {
+            return new MachineView(normalizeSelection(selection), latestDropUrl, latestDropLabel);
+        }
+
+        MachineView withLatestDrop(String latestDropUrl, String latestDropLabel) {
+            return new MachineView(selection, latestDropUrl == null ? "" : latestDropUrl, latestDropLabel);
+        }
     }
 
     public record BotConfig(String token, String guildId, String ownerId, Path dataPath) {
