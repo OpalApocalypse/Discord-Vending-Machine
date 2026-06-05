@@ -4,24 +4,12 @@ A Discord bot that turns server memes, quotes, links, images, and inside jokes i
 
 Post the machine, pick a slot like `A1`, and the bot makes a small show of dispensing the result into a configured dropbox channel.
 
-```text
-+-------------------------------+
-|       DISCORD VENDING         |
-+---------+---------+-----------+
-| A1      | A2      | A3        |
-| Cats    | Dogs    | Otters    |
-+---------+---------+-----------+
-| B1      | B2      | B3        |
-| Memes   | Wholeso | Cringe    |
-+---------+---------+-----------+
-| C1      | C2      | C3        |
-| Quotes  | Waifu   | Frank     |
-+---------+---------+-----------+
-```
+The machine post is a standalone bot message with visual slot preview cards. Slot cards show the code, label, and the first stocked `imageUrl` as a small thumbnail when one is available.
 
 ## What it does
 
-- Posts an embedded vending machine display with slot buttons laid out like the machine grid.
+- Posts a standalone bot-authored vending machine message, so `/machine` does not appear as the public machine post.
+- Shows visual slot preview cards with optional thumbnails from stock item image URLs.
 - Supports `/vend code` for modern Discord slash-command use.
 - Shows the coin/gears/clunk sequence as one private interaction message that edits itself.
 - Dispenses the final item into a configured output channel.
@@ -102,7 +90,7 @@ The runtime stock file is JSON:
 }
 ```
 
-Set `imageUrl` for image embeds. Increase `weight` to make an item appear more often. Mark `rare` to give the drop a special color/footer.
+Set `imageUrl` for image embeds and slot preview thumbnails. Increase `weight` to make an item appear more often. Mark `rare` to give the drop a special color/footer.
 
 ## Notes
 
