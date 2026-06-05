@@ -118,9 +118,13 @@ public final class VendingMachineBot extends ListenerAdapter {
     }
 
     private void handleMachine(SlashCommandInteractionEvent event) {
-        event.replyEmbeds(machineEmbed(machine()))
+        event.deferReply(true).queue(hook -> event.getMessageChannel()
+                .sendMessageEmbeds(machineEmbeds(machine()))
                 .setComponents(slotButtons(machine()))
-                .queue();
+                .queue(
+                        sent -> replyPrivately(hook, "Machine posted."),
+                        failure -> replyPrivately(hook, "Could not post the machine. Check the bot logs.")
+                ));
     }
 
     private void handleVend(SlashCommandInteractionEvent event) {
@@ -316,7 +320,7 @@ public final class VendingMachineBot extends ListenerAdapter {
     }
 
     private void updateMachineDropBox(Message machineMessage, DispensedItem dispensed, Message delivered) {
-        machineMessage.editMessageEmbeds(machineEmbed(machine(), delivered.getJumpUrl(), dispensed))
+        machineMessage.editMessageEmbeds(machineEmbeds(machine(), delivered.getJumpUrl(), dispensed))
                 .setComponents(slotButtons(machine()))
                 .queue(null, failure -> LOGGER.warn("Could not update vending machine drop-box link.", failure));
     }
@@ -429,45 +433,40 @@ public final class VendingMachineBot extends ListenerAdapter {
         );
     }
 
-    private static MessageEmbed machineEmbed(Machine machine) {
-        return machineEmbed(machine, "", null);
+    private static List<MessageEmbed> machineEmbeds(Machine machine) {
+        return machineEmbeds(machine, "", null);
     }
 
-    private static MessageEmbed machineEmbed(Machine machine, String latestDropUrl, DispensedItem latestDrop) {
-        StringBuilder display = new StringBuilder();
-        display.append("+-------------------------------+\n");
-        display.append("|       DISCORD VENDING         |\n");
-        display.append("+---------+---------+---------+\n");
-
+    private static List<MessageEmbed> machineEmbeds(Machine machine, String latestDropUrl, DispensedItem latestDrop) {
         List<Slot> slots = enabledSlots(machine);
-        for (int i = 0; i < slots.size(); i += 3) {
-            List<Slot> row = slots.subList(i, Math.min(i + 3, slots.size()));
-            display.append("|");
-            for (int column = 0; column < 3; column++) {
-                appendCell(display, column < row.size() ? row.get(column).getCode() : "");
-            }
-            display.append("\n|");
-            for (int column = 0; column < 3; column++) {
-                appendCell(display, column < row.size() ? row.get(column).getLabel() : "");
-            }
-            display.append("\n+---------+---------+---------+\n");
-        }
+        List<MessageEmbed> embeds = new ArrayList<>();
 
-        display.append("|          DROP-BOX             |\n");
-        display.append("| ").append(pad(dropBoxLabel(latestDrop), 29)).append(" |\n");
-        display.append("+-------------------------------+\n");
-
-        EmbedBuilder embed = new EmbedBuilder()
+        EmbedBuilder header = new EmbedBuilder()
                 .setTitle(machine.getTitle())
-                .setDescription("```text\n" + display + "```\nUse `/vend code` or press a slot button.")
+                .setDescription("**Drop-box:** " + dropBoxLabel(latestDropUrl, latestDrop) + "\nPick a preview below, then press the matching slot button.")
                 .setColor(MACHINE_YELLOW)
                 .setFooter(slots.size() + " slots stocked")
                 .setTimestamp(Instant.now());
 
         if (latestDropUrl != null && !latestDropUrl.isBlank() && latestDrop != null) {
-            embed.setUrl(latestDropUrl);
+            header.setUrl(latestDropUrl);
         }
-        return embed.build();
+        embeds.add(header.build());
+
+        for (Slot slot : slots.stream().limit(9).toList()) {
+            EmbedBuilder preview = new EmbedBuilder()
+                    .setTitle(slot.getCode())
+                    .setDescription("**" + slot.getLabel() + "**")
+                    .setColor(MACHINE_YELLOW);
+
+            String previewImageUrl = previewImageUrl(slot);
+            if (!previewImageUrl.isBlank()) {
+                preview.setThumbnail(previewImageUrl);
+            }
+
+            embeds.add(preview.build());
+        }
+        return embeds;
     }
 
     private static MessageEmbed dispenseEmbed(DispensedItem dispensed) {
@@ -513,23 +512,23 @@ public final class VendingMachineBot extends ListenerAdapter {
         return label.length() <= 80 ? label : label.substring(0, 77) + "...";
     }
 
-    private static String dropBoxLabel(DispensedItem latestDrop) {
+    private static String dropBoxLabel(String latestDropUrl, DispensedItem latestDrop) {
         if (latestDrop == null) {
             return "latest drop below";
         }
-        return latestDrop.slot().getCode() + " clunked over here";
-    }
-
-    private static void appendCell(StringBuilder display, String value) {
-        display.append(" ").append(pad(value, 7)).append(" |");
-    }
-
-    private static String pad(String value, int width) {
-        String safe = value == null ? "" : value;
-        if (safe.length() > width) {
-            return safe.substring(0, width);
+        String label = latestDrop.slot().getCode() + " clunked over here";
+        if (latestDropUrl == null || latestDropUrl.isBlank()) {
+            return label;
         }
-        return safe + " ".repeat(width - safe.length());
+        return "[" + label + "](" + latestDropUrl + ")";
+    }
+
+    private static String previewImageUrl(Slot slot) {
+        return slot.getItems().stream()
+                .map(StockItem::getImageUrl)
+                .filter(url -> url != null && !url.isBlank())
+                .findFirst()
+                .orElse("");
     }
 
     public record BotConfig(String token, String guildId, String ownerId, Path dataPath) {
