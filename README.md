@@ -33,7 +33,7 @@ Post the machine, pick a slot like `A1`, and the bot makes a small show of dispe
 ## Requirements
 
 - Java 21
-- Maven 3.9+
+- Maven 3.9+, or the included `mvnw.cmd` wrapper on Windows
 - A Discord bot token
 - Message Content Intent enabled in the Discord developer portal if you want legacy typed-code input.
 
@@ -43,14 +43,14 @@ Post the machine, pick a slot like `A1`, and the bot makes a small show of dispe
 2. Set `DISCORD_TOKEN`.
 3. For faster slash-command testing, set `GUILD_ID` to your test server ID. Leave it blank for global commands.
 4. Invite the bot with the `bot` and `applications.commands` scopes.
-5. Run:
+5. Run on Windows PowerShell:
 
-```bash
-mvn package
-java -jar target/discord-vending-machine-1.0.0-SNAPSHOT.jar
+```powershell
+.\mvnw.cmd package
+java -jar .\target\discord-vending-machine-1.0.0-SNAPSHOT.jar
 ```
 
-On first launch, the bot creates `data/machine.json` with sample stock.
+If you already installed Maven, `mvn package` works too. On first launch, the bot creates `data/machine.json` with sample stock.
 
 ## Commands
 
@@ -110,4 +110,4 @@ Set `imageUrl` for image embeds. Increase `weight` to make an item appear more o
 
 ## Notes
 
-The original prototype broke because it depended on an old Java Discord API setup and only committed compiled output. This version checks in source code, uses current JDA, and has CI so dependency breaks are visible sooner.
+The original prototype broke because it depended on an old Java Discord API setup and only committed compiled output. This version checks in source code, uses current JDA, includes a Windows Maven wrapper, and has CI so dependency breaks are visible sooner.
